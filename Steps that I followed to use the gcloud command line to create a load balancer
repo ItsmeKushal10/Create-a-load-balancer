@@ -1,0 +1,100 @@
+ Below listed steps are what I used for the gcloud command line to create a load balancer in Project 3
+First I set my default region
+gcloud config set compute/region Region
+
+Then I replaced Zone for the default zone
+gcloud config set compute/zone Zone
+
+Then to create three different servers, I had to enter this code three times. I named them www1, www2, and www3
+gcloud compute instances create www1 --machine-type e2-medium --zone="$ZONE"
+gcloud compute instances create www2 --machine-type e2-medium --zone="$ZONE"
+gcloud compute instances create www3 --machine-type e2-medium --zone="$ZONE"
+
+Then I had to update the apache and restart it
+apt-get update
+apt-get install apache2 -y
+service apache2 restart
+
+Then I created a firewall rule to allow external traffice to VM instance
+gcloud compute firewall-rules create www-firewall-network-lb --target-tags network-lb-tag --allow tcp:80
+
+To see the external IP address this command is run
+gcloud compute instances list
+
+To make sure that each instance is working curl is used
+curl htt://[34.27.5.180]
+curl htt://[34.136.67.255]
+curl htt://[35.188.63.207]
+
+Now a static external IP address is created
+gcloud compute addresses create network-lb-ip-1 --region Region
+
+legacy HTTP help check resource is added
+gcloud compute http-health-checks create basic-check
+
+This command is used to create target pool
+gcloud compute target-pools create www-pool --region Region --http-health-check basic-check
+
+Then the three instances are added to the pool
+gcloud compute target-pools add-instances www-pool --instances www1,www2,www3
+
+A new rule is added
+gcloud compute forwarding-rules create www-rule --region  Region --ports 80 --address network-lb-ip-1 --target-pool www-pool
+
+Now to send traffic to instances, this command are used to view IP addresses
+gcloud compute forwarding-rules describe www-rule --region Region
+
+This command is used to access the IP address
+IPADDRESS=$(gcloud compute forwarding-rules describe www-rule --region Region --format="json" | jq -r .IPAddress)
+
+We can use echo $IPADDRESS to display the external IP address
+
+To access the IP address we again use curl
+while true; do curl -m1 $IPADDRESS; done
+
+Now I use Ctrl+c to stop the command rom running more because we used curl
+
+Now Finally to create HTTP load balancer, a template is created first
+These commands are used to create a template
+gcloud compute instance-templates create lb-backend-template --region=Region --network=default --subnet=default --tags=allow-health-check --machine-type=e2-medium --image-family=debian-11 --image-project=debian-cloud --metadata=startup-script='#!/bin/bash
+     
+then we update and install
+apt-get update
+     apt-get install apache2 -y
+     a2ensite default-ssl
+     a2enmod ssl
+     vm_hostname="$(curl -H "Metadata-Flavor:Google" http://169.254.169.254/computeMetadata/v1/instance/name)"
+     echo "Page served from: $vm_hostname" | tee /var/www/html/index.html
+     systemctl restart apache2'
+
+then a manager instance group is created
+gcloud compute instance-groups managed create lb-backend-group --template=lb-backend-template --size=2 --zone=Zone
+
+A new firewall health check rule is created
+gcloud compute firewall-rules create fw-allow-health-check --network=default --action=allow --direction=ingress --source-ranges=130.211.0.0/22,35.191.0.0/16 --target-tags=allow-health-check --rules=tcp:80
+
+Now a global static external IP address is created
+gcloud compute addresses create lb-ipv4-1 --ip-version=IPV4 --global
+
+We also need a health check for the load balancer so it is created
+gcloud compute health-checks create http http-basic-check --port 80
+
+A backend service is created
+gcloud compute backend-services create web-backend-service --protocol=HTTP --port-name=http --health-checks=http-basic-check --global
+
+Now my instance is added to the backend service
+gcloud compute backend-services add-backend web-backend-service --instance-group=lb-backend-group --instance-group-zone=Zone --global
+
+A URL map is created to the incoming requests
+gcloud compute url-maps create web-map-http --default-service web-backend-service
+
+A target HTTP proxy is created
+gcloud compute target-http-proxies create http-lb-proxy --url-map web-map-http
+
+At last a global forwarding rule is created to route incoming requests
+gcloud compute forwarding-rules create http-content-rule --address=lb-ipv4-1 --global --target-http-proxy=http-lb-proxy --ports=80
+
+Now we can see the load balancer that was created in the Google Cloud console
+We can now test the load balancer using a web browser which takes around 4 minutes
+
+Thank you.
